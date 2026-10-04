@@ -1,0 +1,40 @@
+Feature_1,Feature_2,Correlation
+Total Fwd Packets,Subflow Fwd Packets,1.0
+Fwd Packet Length Mean,Avg Fwd Segment Size,1.0
+Fwd PSH Flags,SYN Flag Count,1.0
+Fwd URG Flags,CWE Flag Count,1.0
+Fwd Header Length,Fwd Header Length.1,1.0
+Total Backward Packets,Subflow Bwd Packets,1.0
+Bwd Packet Length Mean,Avg Bwd Segment Size,0.9999999999999991
+Total Length of Bwd Packets,Subflow Bwd Bytes,0.9999998601344896
+Total Length of Fwd Packets,Subflow Fwd Bytes,0.9999993580560739
+Subflow Fwd Packets,Subflow Bwd Packets,0.9990699519181041
+Total Fwd Packets,Subflow Bwd Packets,0.9990699519181041
+Total Fwd Packets,Total Backward Packets,0.9990699519181041
+Total Backward Packets,Subflow Fwd Packets,0.999069951918104
+Flow Duration,Fwd IAT Total,0.9985596882647083
+Flow IAT Max,Fwd IAT Max,0.9980840922822511
+RST Flag Count,ECE Flag Count,0.997820027392892
+Packet Length Mean,Average Packet Size,0.9977896841623485
+Total Fwd Packets,Total Length of Bwd Packets,0.9969928057063607
+Total Length of Bwd Packets,Subflow Fwd Packets,0.9969928057063607
+Subflow Fwd Packets,Subflow Bwd Bytes,0.9969866623498596
+Total Fwd Packets,Subflow Bwd Bytes,0.9969866623498596
+Total Backward Packets,Total Length of Bwd Packets,0.9944292897323929
+Total Length of Bwd Packets,Subflow Bwd Packets,0.9944292897323929
+Total Backward Packets,Subflow Bwd Bytes,0.9944241119039878
+Subflow Bwd Packets,Subflow Bwd Bytes,0.9944241119039878
+Idle Mean,Idle Max,0.9903856264243549
+Idle Mean,Idle Min,0.9902142864575785
+Flow IAT Max,Idle Max,0.9891845595717808
+Fwd IAT Max,Idle Max,0.9883564146449322
+Flow Packets/s,Fwd Packets/s,0.9875620650640273
+Max Packet Length,Packet Length Std,0.9844096285857542
+Bwd Packet Length Max,Bwd Packet Length Std,0.982775604677012
+Flow IAT Max,Idle Mean,0.979697797836159
+Fwd IAT Max,Idle Mean,0.9781078744648666
+Fwd Packet Length Max,Fwd Packet Length Std,0.9684139325385492
+Idle Max,Idle Min,0.9618070508648162
+Bwd Packet Length Max,Bwd Packet Length Mean,0.9590156867037125
+Bwd Packet Length Max,Avg Bwd Segment Size,0.959015686703705
+Flow IAT Max,Idle Min,0.9514790107447977

@@ -1,0 +1,9 @@
+Metric,Value
+Total network flows,2827876
+Total network features,78
+Number of attack families,9
+Missing values,0
+Infinite values,0
+Constant features,8
+Highly correlated feature pairs,39
+Rare classes (<100 samples),2
