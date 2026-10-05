@@ -9,3 +9,5 @@ data/*.csv
 data/*.zip
 data/*.pcap
 models/
+
+data/
