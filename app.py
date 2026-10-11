@@ -1,1839 +1,1103 @@
-import streamlit as st
-import pandas as pd
+from pathlib import Path
+
 import numpy as np
+
+import pandas as pd
+
+import streamlit as st
+
 import matplotlib.pyplot as plt
 
-from src.detector import (
-    detect_network_activity,
-    evaluate_model,
-    feature_names,
-    scaler,
-    model,
-    explainer,
+
+
+from src.detector import evaluate_model, feature_names, scaler, model, explainer
+
+from src.threshold_detector import (
+
+          detect_network_activity_tuned,
+
+          detect_network_traffic_batch_tuned,
+
 )
 
 
+
+def navigate_to(page):
+
+          st.session_state.main_navigation = page
+
 # ============================================================
-# PAGE CONFIGURATION
+
+# Configuration, CSS, and shared helpers
+
 # ============================================================
+
+ROOT = Path(__file__).resolve().parent
+
+DATA_PATH = ROOT / "data" / "processed_cicids2017.csv"
+
+CSS_PATH = ROOT / "assets" / "style.css"
+
+FEATURES = list(feature_names)
+
+LABEL_COLUMNS = {
+
+          "Attack_Type", "Label", "Actual_Attack_Type", "Prediction",
+
+          "Predicted", "Status", "Confidence", "BOT_Probability",
+
+}
+
+BOT_THRESHOLD_DISPLAY = 0.15
+
+
 
 st.set_page_config(
-    page_title="Explainable ML-Based IDS",
-    page_icon="🛡️",
-    layout="wide",
+
+          page_title="Explainable ML-Based IDS",
+
+          page_icon="🛡️",
+
+          layout="wide",
+
+          initial_sidebar_state="expanded",
+
 )
 
 
-# ============================================================
-# APPLICATION TITLE
-# ============================================================
-
-st.title(
-    "🛡️ Explainable Machine Learning-Based Intrusion Detection System"
-)
-
-st.write(
-    "Network security monitoring and explainable attack detection."
-)
-
-st.success(
-    "IDS model and SHAP detector loaded successfully."
-)
 
 
-# ============================================================
-# TEST NETWORK ACTIVITY
-# ============================================================
 
-st.header("🔍 Test Network Activity")
+def load_css():
 
-DATA_PATH = "data/processed_cicids2017.csv"
+          """Load project CSS without failing if the stylesheet is absent."""
+
+          if CSS_PATH.exists():
+
+                    css = CSS_PATH.read_text(encoding="utf-8")
+
+                    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
 
 
-# ============================================================
-# LOAD DATASET
-# ============================================================
 
-@st.cache_data
+
+
+load_css()
+
+
+
+
+
+@st.cache_data(show_spinner=False)
+
 def load_test_data():
 
-    data = pd.read_csv(DATA_PATH)
+          if not DATA_PATH.exists():
 
-    if "Attack_Type" not in data.columns:
-        raise ValueError(
-            "The dataset must contain an 'Attack_Type' column."
-        )
+                    raise FileNotFoundError(f"Bundled dataset not found: {DATA_PATH}")
 
-    feature_columns = [
-        column
-        for column in data.columns
-        if column != "Attack_Type"
-    ]
+          data = pd.read_csv(DATA_PATH)
 
-    data[feature_columns] = (
-        data[feature_columns]
-        .apply(pd.to_numeric, errors="coerce")
-    )
+          if "Attack_Type" not in data.columns:
 
-    data[feature_columns] = (
-        data[feature_columns]
-        .replace([np.inf, -np.inf], np.nan)
-        .fillna(0)
-    )
+                    raise ValueError("The bundled dataset must contain an 'Attack_Type' column.")
 
-    return data
+          missing = [f for f in FEATURES if f not in data.columns]
 
+          if missing:
 
-# ============================================================
-# LOAD DATA
-# ============================================================
+                    raise ValueError(
 
-try:
+                              f"Bundled dataset is missing {len(missing)} model features: {missing[:20]}"
 
-    df = load_test_data()
-
-except Exception as e:
-
-    st.error(
-        f"Unable to load the dataset: {e}"
-    )
-
-    st.stop()
-
-
-# ============================================================
-# INITIALIZE SESSION STATE
-# ============================================================
-
-if "bot_analysis" not in st.session_state:
-    st.session_state.bot_analysis = None
-
-if "bot_correct" not in st.session_state:
-    st.session_state.bot_correct = None
-
-if "bot_errors" not in st.session_state:
-    st.session_state.bot_errors = None
-
-if "shap_direction_df" not in st.session_state:
-    st.session_state.shap_direction_df = None
-
-
-# ============================================================
-# DATASET INFORMATION
-# ============================================================
-
-st.write(
-    f"Loaded test dataset: **{len(df):,} network flows**"
-)
-
-
-# ============================================================
-# SELECT ATTACK TYPE
-# ============================================================
-
-attack_types = sorted(
-    df["Attack_Type"]
-    .dropna()
-    .astype(str)
-    .unique()
-)
-
-if len(attack_types) == 0:
-
-    st.error(
-        "No attack classes were found in the dataset."
-    )
-
-    st.stop()
-
-
-selected_attack = st.selectbox(
-    "Select network activity type",
-    attack_types,
-)
-
-
-# ============================================================
-# INDIVIDUAL NETWORK ACTIVITY ANALYSIS
-# ============================================================
-
-if st.button(
-    "🔎 Analyze Network Activity"
-):
-
-    matching_rows = df[
-        df["Attack_Type"].astype(str)
-        == selected_attack
-    ]
-
-    if len(matching_rows) == 0:
-
-        st.error(
-            "No network flows were found for the selected attack type."
-        )
-
-    else:
-
-        selected_flow = matching_rows.iloc[0]
-
-        actual_class = selected_flow[
-            "Attack_Type"
-        ]
-
-        flow_data = selected_flow.drop(
-            labels=["Attack_Type"]
-        )
-
-        flow_data = pd.to_numeric(
-            flow_data,
-            errors="coerce",
-        )
-
-        flow_data = (
-            flow_data
-            .replace([np.inf, -np.inf], np.nan)
-            .fillna(0)
-        )
-
-        try:
-
-            result = detect_network_activity(
-                flow_data
-            )
-
-        except Exception as e:
-
-            st.error(
-                f"Network activity detection failed: {e}"
-            )
-
-            st.stop()
-
-
-        # ====================================================
-        # DETECTION RESULT
-        # ====================================================
-
-        st.subheader(
-            "Detection Result"
-        )
-
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-
-            st.metric(
-                "Predicted Class",
-                result["prediction"],
-            )
-
-        with col2:
-
-            st.metric(
-                "Confidence",
-                f"{result['confidence'] * 100:.2f}%",
-            )
-
-        with col3:
-
-            st.metric(
-                "Status",
-                result["status"],
-            )
-
-        st.info(
-            f"Alert: {result['alert']}"
-        )
-
-        st.write(
-            f"**Actual class in dataset:** {actual_class}"
-        )
-
-
-        # ====================================================
-        # SHAP EXPLANATION
-        # ====================================================
-
-        st.subheader(
-            "🧠 SHAP Explanation"
-        )
-
-        explanation = result[
-            "explanation"
-        ]
-
-        if isinstance(
-            explanation,
-            pd.DataFrame
-        ):
-
-            st.dataframe(
-                explanation,
-                width="stretch",
-            )
-
-        else:
-
-            st.write(
-                explanation
-            )
-
-
-# ============================================================
-# FULL MODEL EVALUATION
-# ============================================================
-
-st.divider()
-
-st.header(
-    "📊 Full Model Evaluation"
-)
-
-st.write(
-    "Evaluate the IDS model on the complete test dataset."
-)
-
-
-if st.button(
-    "📈 Run Full Model Evaluation"
-):
-
-    with st.spinner(
-        "Evaluating the model on the complete test dataset..."
-    ):
-
-        try:
-
-            evaluation = evaluate_model(
-                df
-            )
-
-        except Exception as e:
-
-            st.error(
-                f"Model evaluation failed: {e}"
-            )
-
-            st.stop()
-
-
-    st.success(
-        "Full model evaluation completed successfully."
-    )
-
-
-    # ========================================================
-    # OVERALL PERFORMANCE
-    # ========================================================
-
-    st.subheader(
-        "Overall Performance"
-    )
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-
-        st.metric(
-            "Accuracy",
-            f"{evaluation['accuracy'] * 100:.2f}%",
-        )
-
-    with col2:
-
-        st.metric(
-            "Precision",
-            f"{evaluation['precision'] * 100:.2f}%",
-        )
-
-    with col3:
-
-        st.metric(
-            "Recall",
-            f"{evaluation['recall'] * 100:.2f}%",
-        )
-
-    with col4:
-
-        st.metric(
-            "F1-Score",
-            f"{evaluation['f1_score'] * 100:.2f}%",
-        )
-
-
-    # ========================================================
-    # CLASSIFICATION REPORT
-    # ========================================================
-
-    st.subheader(
-        "📋 Class-wise Performance"
-    )
-
-    report_df = evaluation[
-        "classification_report"
-    ].copy()
-
-    class_rows = [
-        label
-        for label in report_df.index
-        if label not in [
-            "accuracy",
-            "macro avg",
-            "weighted avg",
-        ]
-    ]
-
-    class_report = report_df.loc[
-        class_rows
-    ].copy()
-
-    st.dataframe(
-        class_report.style.format({
-            "precision": "{:.4f}",
-            "recall": "{:.4f}",
-            "f1-score": "{:.4f}",
-            "support": "{:.0f}",
-        }),
-        width="stretch",
-    )
-
-
-    # ========================================================
-    # SUMMARY AVERAGES
-    # ========================================================
-
-    st.subheader(
-        "📌 Summary Averages"
-    )
-
-    summary_df = report_df.loc[
-        ["macro avg", "weighted avg"]
-    ].copy()
-
-    st.dataframe(
-        summary_df.style.format({
-            "precision": "{:.4f}",
-            "recall": "{:.4f}",
-            "f1-score": "{:.4f}",
-            "support": "{:.0f}",
-        }),
-        width="stretch",
-    )
-
-
-    # ========================================================
-    # CONFUSION MATRIX
-    # ========================================================
-
-    st.subheader(
-        "🔢 Confusion Matrix"
-    )
-
-    confusion_df = evaluation[
-        "confusion_matrix"
-    ]
-
-    st.dataframe(
-        confusion_df,
-        width="stretch",
-    )
-
-
-    # ========================================================
-    # CONFUSION MATRIX HEATMAP
-    # ========================================================
-
-    st.subheader(
-        "🔥 Confusion Matrix Heatmap"
-    )
-
-    fig, ax = plt.subplots(
-        figsize=(12, 8)
-    )
-
-    image = ax.imshow(
-        confusion_df.values,
-        aspect="auto",
-    )
-
-    # --------------------------------------------------------
-    # Add values inside cells
-    # --------------------------------------------------------
-
-    for i in range(
-        len(confusion_df.index)
-    ):
-
-        for j in range(
-            len(confusion_df.columns)
-        ):
-
-            ax.text(
-                j,
-                i,
-                f"{confusion_df.iloc[i, j]:,}",
-                ha="center",
-                va="center",
-                fontsize=8,
-            )
-
-
-    # --------------------------------------------------------
-    # Axis labels
-    # --------------------------------------------------------
-
-    ax.set_xticks(
-        range(len(confusion_df.columns))
-    )
-
-    ax.set_xticklabels(
-        confusion_df.columns,
-        rotation=45,
-        ha="right",
-    )
-
-    ax.set_yticks(
-        range(len(confusion_df.index))
-    )
-
-    ax.set_yticklabels(
-        confusion_df.index
-    )
-
-    ax.set_xlabel(
-        "Predicted Class"
-    )
-
-    ax.set_ylabel(
-        "Actual Class"
-    )
-
-    ax.set_title(
-        "IDS Confusion Matrix"
-    )
-
-
-    # --------------------------------------------------------
-    # Color bar
-    # --------------------------------------------------------
-
-    fig.colorbar(
-        image,
-        ax=ax,
-        label="Number of Samples",
-    )
-
-    plt.tight_layout()
-
-    st.pyplot(
-        fig,
-        width="stretch",
-    )
-
-    plt.close(fig)
-
-
-    # ========================================================
-    # MODEL PERFORMANCE VISUALIZATION
-    # ========================================================
-
-    st.subheader(
-        "📊 Model Performance Visualization"
-    )
-
-    metric_rows = [
-        row
-        for row in report_df.index
-        if row not in [
-            "accuracy",
-            "macro avg",
-            "weighted avg",
-        ]
-    ]
-
-    if metric_rows:
-
-        chart_df = report_df.loc[
-            metric_rows,
-            [
-                "precision",
-                "recall",
-                "f1-score",
-            ],
-        ].copy()
-
-        st.bar_chart(
-            chart_df
-        )
-
-        st.caption(
-            "Class-wise precision, recall, and F1-score. "
-            "Higher values indicate better detection performance."
-        )
-
-
-# ============================================================
-# BOT ATTACK ERROR ANALYSIS
-# ============================================================
-
-st.divider()
-
-st.header(
-    "🤖 BOT Attack Error Analysis"
-)
-
-st.write(
-    "Investigate BOT traffic that the IDS incorrectly classified as BENIGN."
-)
-
-
-# ============================================================
-# ANALYZE BOT → BENIGN ERRORS
-# ============================================================
-
-if st.button(
-    "🔬 Analyze BOT → BENIGN Errors"
-):
-
-    with st.spinner(
-        "Analyzing BOT misclassifications..."
-    ):
-
-        # ====================================================
-        # 1. SELECT ONLY ACTUAL BOT TRAFFIC
-        # ====================================================
-
-        bot_mask = (
-            df["Attack_Type"]
-            .astype(str)
-            .eq("BOT")
-        )
-
-        missing_features = [
-            feature
-            for feature in feature_names
-            if feature not in df.columns
-        ]
-
-        if missing_features:
-
-            st.error(
-                "The following model features are missing "
-                f"from the dataset: {missing_features}"
-            )
-
-            st.stop()
-
-
-        X_bot = df.loc[
-            bot_mask,
-            feature_names,
-        ].copy()
-
-
-        X_bot = (
-            X_bot
-            .apply(pd.to_numeric, errors="coerce")
-            .replace([np.inf, -np.inf], np.nan)
-            .fillna(0)
-        )
-
-
-        # ====================================================
-        # CHECK WHETHER BOT TRAFFIC EXISTS
-        # ====================================================
-
-        if len(X_bot) == 0:
-
-            st.warning(
-                "No BOT traffic was found in the dataset."
-            )
-
-            st.session_state.bot_analysis = None
-            st.session_state.bot_correct = None
-            st.session_state.bot_errors = None
-            st.session_state.shap_direction_df = None
-
-            st.stop()
-
-
-        # ====================================================
-        # 2. PREDICT BOT SAMPLES
-        # ====================================================
-
-        try:
-
-            X_bot_scaled = scaler.transform(
-                X_bot
-            )
-
-            bot_predictions = model.predict(
-                X_bot_scaled
-            )
-
-            bot_probabilities = model.predict_proba(
-                X_bot_scaled
-            )
-
-        except Exception as e:
-
-            st.error(
-                f"BOT prediction failed: {e}"
-            )
-
-            st.stop()
-
-
-        class_names_model = list(
-            model.classes_
-        )
-
-
-        # ====================================================
-        # CHECK BENIGN CLASS
-        # ====================================================
-
-        if "BENIGN" not in class_names_model:
-
-            st.error(
-                "BENIGN class was not found in the trained model classes."
-            )
-
-            st.stop()
-
-
-        benign_index = class_names_model.index(
-            "BENIGN"
-        )
-
-
-        # ====================================================
-        # PREDICTION CONFIDENCE
-        # ====================================================
-
-        prediction_confidence = (
-            bot_probabilities
-            .max(axis=1)
-        )
-
-
-        # ====================================================
-        # BENIGN PROBABILITY
-        # ====================================================
-
-        benign_probability = (
-            bot_probabilities[
-                :,
-                benign_index,
-            ]
-        )
-
-
-        # ====================================================
-        # 3. CREATE BOT ANALYSIS DATAFRAME
-        # ====================================================
-
-        bot_analysis = X_bot.copy()
-
-        bot_analysis[
-            "Actual"
-        ] = "BOT"
-
-        bot_analysis[
-            "Predicted"
-        ] = bot_predictions
-
-        bot_analysis[
-            "Prediction Confidence"
-        ] = prediction_confidence
-
-        bot_analysis[
-            "BENIGN Probability"
-        ] = benign_probability
-
-
-        # ====================================================
-        # CORRECT BOT PREDICTIONS
-        # ====================================================
-
-        bot_correct = bot_analysis[
-            bot_analysis["Predicted"]
-            == "BOT"
-        ].copy()
-
-
-        # ====================================================
-        # BOT → BENIGN ERRORS
-        # ====================================================
-
-        bot_errors = bot_analysis[
-            bot_analysis["Predicted"]
-            == "BENIGN"
-        ].copy()
-
-
-        # ====================================================
-        # SAVE EVERYTHING TO SESSION STATE
-        # ====================================================
-
-        st.session_state.bot_analysis = (
-            bot_analysis
-        )
-
-        st.session_state.bot_correct = (
-            bot_correct
-        )
-
-        st.session_state.bot_errors = (
-            bot_errors
-        )
-
-        st.session_state.shap_direction_df = (
-            None
-        )
-
-
-        st.success(
-            "BOT error analysis completed successfully."
-        )
-
-
-# ============================================================
-# RETRIEVE BOT ANALYSIS FROM SESSION STATE
-# ============================================================
-
-bot_analysis = (
-    st.session_state.bot_analysis
-)
-
-bot_correct = (
-    st.session_state.bot_correct
-)
-
-bot_errors = (
-    st.session_state.bot_errors
-)
-
-
-# ============================================================
-# ONLY SHOW BOT RESULTS AFTER ANALYSIS
-# ============================================================
-
-if bot_analysis is not None:
-
-    # ========================================================
-    # BOT ERROR SUMMARY
-    # ========================================================
-
-    st.subheader(
-        "📊 BOT Error Summary"
-    )
-
-    total_bot = len(
-        bot_analysis
-    )
-
-    correct_bot = len(
-        bot_correct
-    )
-
-    incorrect_bot = len(
-        bot_errors
-    )
-
-    bot_recall = (
-        correct_bot / total_bot
-        if total_bot > 0
-        else 0
-    )
-
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-
-        st.metric(
-            "Total BOT Flows",
-            f"{total_bot:,}",
-        )
-
-    with col2:
-
-        st.metric(
-            "Correct BOT",
-            f"{correct_bot:,}",
-        )
-
-    with col3:
-
-        st.metric(
-            "BOT → BENIGN",
-            f"{incorrect_bot:,}",
-        )
-
-    with col4:
-
-        st.metric(
-            "BOT Recall",
-            f"{bot_recall * 100:.2f}%",
-        )
-
-
-    # ========================================================
-    # CONFIDENCE ANALYSIS
-    # ========================================================
-
-    st.subheader(
-        "🎯 Confidence Analysis"
-    )
-
-    if len(bot_errors) > 0:
-
-        avg_benign_confidence = (
-            bot_errors[
-                "BENIGN Probability"
-            ].mean()
-        )
-
-        max_benign_confidence = (
-            bot_errors[
-                "BENIGN Probability"
-            ].max()
-        )
-
-        min_benign_confidence = (
-            bot_errors[
-                "BENIGN Probability"
-            ].min()
-        )
-
-        avg_prediction_confidence = (
-            bot_errors[
-                "Prediction Confidence"
-            ].mean()
-        )
-
-
-        c1, c2, c3, c4 = st.columns(4)
-
-        with c1:
-
-            st.metric(
-                "Average BENIGN Probability",
-                f"{avg_benign_confidence * 100:.2f}%",
-            )
-
-        with c2:
-
-            st.metric(
-                "Minimum BENIGN Probability",
-                f"{min_benign_confidence * 100:.2f}%",
-            )
-
-        with c3:
-
-            st.metric(
-                "Maximum BENIGN Probability",
-                f"{max_benign_confidence * 100:.2f}%",
-            )
-
-        with c4:
-
-            st.metric(
-                "Average Prediction Confidence",
-                f"{avg_prediction_confidence * 100:.2f}%",
-            )
-
-
-        st.write(
-            "These values show how confidently the model "
-            "mistakes BOT traffic for normal BENIGN traffic."
-        )
-
-    else:
-
-        st.success(
-            "No BOT → BENIGN misclassifications were detected."
-        )
-
-
-    # ========================================================
-    # BOT FEATURE COMPARISON
-    # ========================================================
-
-    st.subheader(
-        "📈 BOT Feature Comparison"
-    )
-
-    if (
-        len(bot_errors) > 0
-        and len(bot_correct) > 0
-    ):
-
-        comparison_rows = []
-
-        for feature in feature_names:
-
-            correct_mean = (
-                bot_correct[
-                    feature
-                ].mean()
-            )
-
-            error_mean = (
-                bot_errors[
-                    feature
-                ].mean()
-            )
-
-
-            if (
-                correct_mean != 0
-                and np.isfinite(correct_mean)
-            ):
-
-                relative_difference = (
-                    abs(
-                        error_mean
-                        - correct_mean
-                    )
-                    /
-                    abs(correct_mean)
-                ) * 100
-
-            else:
-
-                relative_difference = 0
-
-
-            comparison_rows.append({
-                "Feature": feature,
-
-                "Correct BOT Mean":
-                    correct_mean,
-
-                "BOT → BENIGN Mean":
-                    error_mean,
-
-                "Relative Difference (%)":
-                    relative_difference,
-            })
-
-
-        comparison_df = pd.DataFrame(
-            comparison_rows
-        )
-
-
-        comparison_df = (
-            comparison_df
-            .sort_values(
-                "Relative Difference (%)",
-                ascending=False,
-            )
-        )
-
-
-        st.dataframe(
-            comparison_df
-            .head(20)
-            .style.format({
-                "Correct BOT Mean":
-                    "{:.4f}",
-
-                "BOT → BENIGN Mean":
-                    "{:.4f}",
-
-                "Relative Difference (%)":
-                    "{:.2f}",
-            }),
-            width="stretch",
-        )
-
-
-        st.info(
-            "Features with larger differences may help explain "
-            "why some BOT flows are harder for the model to recognize."
-        )
-
-
-    elif len(bot_errors) > 0:
-
-        st.info(
-            "BOT → BENIGN errors exist, but there are no correctly "
-            "classified BOT flows available for comparison."
-        )
-
-
-    # ========================================================
-    # SHAP DIRECTION ANALYSIS
-    # ========================================================
-
-    st.subheader(
-        "🧠 SHAP Direction Analysis"
-    )
-
-    if len(bot_errors) > 0:
-
-        shap_sample_size = min(
-            20,
-            len(bot_errors),
-        )
-
-        shap_sample = (
-            bot_errors
-            .head(shap_sample_size)
-            [feature_names]
-            .copy()
-        )
-
-
-        shap_sample = (
-            shap_sample
-            .apply(pd.to_numeric, errors="coerce")
-            .replace([np.inf, -np.inf], np.nan)
-            .fillna(0)
-        )
-
-
-        try:
-
-            shap_sample_scaled = (
-                scaler.transform(
-                    shap_sample
-                )
-            )
-
-        except Exception as e:
-
-            st.error(
-                f"Unable to scale SHAP samples: {e}"
-            )
-
-            st.stop()
-
-
-        with st.spinner(
-            "Calculating SHAP direction for BOT → BENIGN errors..."
-        ):
-
-            try:
-
-                shap_values = (
-                    explainer.shap_values(
-                        shap_sample_scaled
-                    )
-                )
-
-            except Exception as e:
-
-                st.error(
-                    f"SHAP calculation failed: {e}"
-                )
-
-                shap_values = None
-
-
-        if shap_values is not None:
-
-            # =================================================
-            # HANDLE SHAP OUTPUT FORMAT
-            # =================================================
-
-            # Newer SHAP versions can return an Explanation.
-            if hasattr(
-                shap_values,
-                "values"
-            ):
-
-                shap_values = (
-                    shap_values.values
-                )
-
-
-            # -------------------------------------------------
-            # Older SHAP format:
-            # list[class] -> samples x features
-            # -------------------------------------------------
-
-            if isinstance(
-                shap_values,
-                list
-            ):
-
-                benign_shap = (
-                    np.asarray(
-                        shap_values[
-                            benign_index
-                        ]
-                    )
-                )
-
-
-            else:
-
-                shap_values = np.asarray(
-                    shap_values
-                )
-
-
-                # -------------------------------------------------
-                # samples x features x classes
-                # -------------------------------------------------
-
-                if len(
-                    shap_values.shape
-                ) == 3:
-
-                    # Usually:
-                    # samples, features, classes
-
-                    if (
-                        shap_values.shape[2]
-                        == len(class_names_model)
-                    ):
-
-                        benign_shap = (
-                            shap_values[
-                                :,
-                                :,
-                                benign_index,
-                            ]
-                        )
-
-                    # Some SHAP versions may return:
-                    # classes, samples, features
-
-                    elif (
-                        shap_values.shape[0]
-                        == len(class_names_model)
-                    ):
-
-                        benign_shap = (
-                            shap_values[
-                                benign_index,
-                                :,
-                                :,
-                            ]
-                        )
-
-                    else:
-
-                        st.error(
-                            "Unsupported 3-dimensional SHAP output shape: "
-                            f"{shap_values.shape}"
-                        )
-
-                        benign_shap = None
-
-
-                elif len(
-                    shap_values.shape
-                ) == 2:
-
-                    benign_shap = (
-                        shap_values
                     )
 
-                else:
+          X = data.loc[:, FEATURES].copy()
 
-                    st.error(
-                        "Unsupported SHAP output shape: "
-                        f"{shap_values.shape}"
+          X = X.apply(pd.to_numeric, errors="coerce")
+
+          X = X.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+          data.loc[:, FEATURES] = X
+
+          return data
+
+
+
+
+
+def get_test_data():
+
+          try:
+
+                    return load_test_data()
+
+          except Exception as exc:
+
+                    st.error(f"Unable to load the bundled dataset: {exc}")
+
+                    return None
+
+
+
+
+
+def clean_feature_frame(data, require_all=True):
+
+          """Select features in training order and safely coerce invalid values to zero."""
+
+          if isinstance(data, pd.Series):
+
+                    data = data.to_frame().T
+
+          elif isinstance(data, dict):
+
+                    data = pd.DataFrame([data])
+
+          elif not isinstance(data, pd.DataFrame):
+
+                    raise TypeError("Expected a DataFrame, Series, or dictionary.")
+
+          frame = data.drop(columns=list(LABEL_COLUMNS), errors="ignore").copy()
+
+          missing = [f for f in FEATURES if f not in frame.columns]
+
+          if missing and require_all:
+
+                    raise ValueError(
+
+                              f"CSV is missing {len(missing)} required model features: {missing[:20]}"
+
                     )
 
-                    benign_shap = None
+          for feature in missing:
+
+                    frame[feature] = 0.0
+
+          frame = frame.loc[:, FEATURES].copy()
+
+          frame = frame.apply(pd.to_numeric, errors="coerce")
+
+          frame = frame.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+          return frame
 
 
-            # =================================================
-            # CALCULATE SIGNED AND ABSOLUTE SHAP
-            # =================================================
-
-            if benign_shap is not None:
-
-                benign_shap = np.asarray(
-                    benign_shap
-                )
 
 
-                # Make sure shape is:
-                # samples x features
 
-                if (
-                    benign_shap.ndim != 2
-                ):
+def explain_class_shap(shap_result, class_index, n_classes, n_features):
 
-                    st.error(
-                        "SHAP values could not be converted "
-                        "to a samples × features matrix."
+          """Normalize common SHAP output shapes to (samples, features) for one class."""
+
+          if hasattr(shap_result, "values"):
+
+                    values = np.asarray(shap_result.values)
+
+          elif isinstance(shap_result, list):
+
+                    if class_index >= len(shap_result):
+
+                              raise ValueError("SHAP output does not contain the requested class.")
+
+                    values = np.asarray(shap_result[class_index])
+
+          else:
+
+                    values = np.asarray(shap_result)
+
+
+
+          if values.ndim == 2:
+
+                    if values.shape[1] == n_features:
+
+                              return values
+
+                    raise ValueError(f"Unexpected 2-D SHAP shape: {values.shape}")
+
+          if values.ndim == 3:
+
+                    if values.shape[1] == n_features and values.shape[2] == n_classes:
+
+                              return values[:, :, class_index]
+
+                    if values.shape[0] == n_classes and values.shape[2] == n_features:
+
+                              return values[class_index, :, :]
+
+                    if values.shape[1] == n_classes and values.shape[2] == n_features:
+
+                              return values[:, class_index, :]
+
+          raise ValueError(f"Unsupported SHAP output shape: {values.shape}")
+
+
+
+
+
+def render_sidebar():
+
+          with st.sidebar:
+
+                    st.markdown(
+
+                              '<div class="brand"><div class="brand-icon">🛡️</div>'
+
+                              '<div><div class="brand-title">Sentinel IDS</div>'
+
+                              '<div class="brand-subtitle">Network Security Console</div></div></div>',
+
+                              unsafe_allow_html=True,
+
                     )
 
-                elif (
-                    benign_shap.shape[1]
-                    != len(feature_names)
-                ):
+                    st.markdown("---")
 
-                    st.error(
-                        "The number of SHAP features does not "
-                        "match the model feature names."
+                    page = st.radio(
+
+                              "NAVIGATION",
+
+                              [
+
+                                        "Home",
+
+                                        "How It Works",
+
+                                        "Dashboard",
+
+                                        "Upload Traffic",
+
+                                        "Full Model Evaluation",
+
+                                        "BOT Error Analysis",
+
+                              ],
+
+                              key="main_navigation",
+
+                              label_visibility="visible",
+
                     )
 
-                else:
+                    st.markdown("---")
 
-                    mean_signed_shap = (
-                        benign_shap
-                        .mean(axis=0)
+                    st.markdown(
+
+                              '<div class="sidebar-status"><span class="status-dot"></span>'
+
+                              'Model artifacts loaded<br><small>Local inference mode</small></div>',
+
+                              unsafe_allow_html=True,
+
                     )
 
-                    mean_abs_shap = (
-                        np.abs(
-                            benign_shap
-                        )
-                        .mean(axis=0)
+                    st.caption("Explainable Machine Learning-Based IDS")
+
+          return page
+
+
+
+
+
+def page_header(eyebrow, title, description):
+
+          st.markdown(f'<div class="eyebrow">{eyebrow}</div>', unsafe_allow_html=True)
+
+          st.title(title)
+
+          st.markdown(f'<p class="page-description">{description}</p>', unsafe_allow_html=True)
+
+
+
+
+
+def render_home():
+
+          st.markdown(
+
+                    '<div class="hero"><div class="eyebrow">NETWORK DEFENSE • ML + XAI</div>'
+
+                    '<h1>Understand threats.<br><span>Act with confidence.</span></h1>'
+
+                    '<p>Detect suspicious network flows with a machine-learning IDS, '
+
+                    'inspect traffic predictions, and explore feature contributions with SHAP.</p>'
+
+                    '</div>',
+
+                    unsafe_allow_html=True,
+
+          )
+
+          c1, c2, c3 = st.columns(3)
+
+          with c1:
+
+                    st.markdown('<div class="feature-card"><div class="card-icon">📂</div>'
+
+                                                  '<h3>Traffic Analysis</h3><p>Upload CICFlowMeter-compatible CSV files '
+
+                                                  'and classify network flows.</p></div>', unsafe_allow_html=True)
+
+          with c2:
+
+                    st.markdown('<div class="feature-card"><div class="card-icon">📊</div>'
+
+                                                  '<h3>Model Evaluation</h3><p>Review classification metrics and '
+
+                                                  'the confusion matrix on the bundled labelled dataset.</p></div>', unsafe_allow_html=True)
+
+          with c3:
+
+                    st.markdown('<div class="feature-card"><div class="card-icon">🧠</div>'
+
+                                                  '<h3>Explainable AI</h3><p>Use SHAP feature attributions to understand '
+
+                                                  'which inputs influence a model output.</p></div>', unsafe_allow_html=True)
+
+          st.markdown("### Get started")
+
+          st.write("Choose a workspace from the sidebar, or use the shortcuts below.")
+
+          a, b, c = st.columns(3)
+
+          with a:
+
+                    st.button(
+
+                        "Upload traffic →",
+
+                        use_container_width=True,
+
+                        on_click=navigate_to,
+
+                        args=("Upload Traffic",),
+
                     )
 
+          with b:
 
-                    shap_direction_df = pd.DataFrame({
-                        "Feature":
-                            feature_names,
+                    st.button(
 
-                        "Mean SHAP":
-                            mean_signed_shap,
+                        "Evaluate model →",
 
-                        "Mean Absolute SHAP":
-                            mean_abs_shap,
+                        use_container_width=True,
+
+                        on_click=navigate_to,
+
+                        args=("Full Model Evaluation",),
+
+                    )
+
+          with c:
+
+                    st.button(
+
+                        "Analyze BOT errors →",
+
+                        use_container_width=True,
+
+                        on_click=navigate_to,
+
+                        args=("BOT Error Analysis",),
+
+                    )
+
+          st.info("Login and registration are not enabled in this build. Add a secure authentication provider before using this app with multiple users.")
+
+
+
+
+
+def render_how_it_works():
+
+          page_header("OVERVIEW", "How it works", "A practical walkthrough of the IDS pipeline and its explainability features.")
+
+          steps = [
+
+                    ("01", "Prepare flow features", "Each CSV row should represent one network flow and contain the exact CICFlowMeter features used during model training."),
+
+                    ("02", "Validate and normalize", "The application checks required feature columns, orders them to match training, converts values to numeric, and replaces invalid or infinite entries with zero."),
+
+                    ("03", "Scale and classify", "The saved scaler transforms the features before the Random Forest model produces class probabilities."),
+
+                    ("04", "Apply the BOT operating threshold", "For uploaded traffic, the tuned detector flags BOT when its probability reaches the configured threshold (default 0.15). Other non-BENIGN predictions are marked suspicious."),
+
+                    ("05", "Explain the model output", "SHAP values describe feature contributions to the explained model output. They explain the underlying model, not necessarily the separate threshold override."),
+
+          ]
+
+          for number, title, body in steps:
+
+                    st.markdown(
+
+                              f'<div class="step-card"><div class="step-number">{number}</div>'
+
+                              f'<div><h3>{title}</h3><p>{body}</p></div></div>',
+
+                              unsafe_allow_html=True,
+
+                    )
+
+          st.warning("Replacing invalid numeric values with zero is a preprocessing choice, not a guarantee that the original value was truly zero. Verify this matches the model's training pipeline.")
+
+
+
+
+
+def render_dashboard():
+
+          page_header("WORKSPACE", "Security dashboard", "Choose a task to inspect traffic, evaluate model performance, or investigate BOT misclassifications.")
+
+          data = get_test_data()
+
+          total = len(data) if data is not None else 0
+
+          class_count = data["Attack_Type"].nunique() if data is not None else 0
+
+          c1, c2, c3 = st.columns(3)
+
+          c1.metric("Bundled flows", f"{total:,}" if total else "Unavailable")
+
+          c2.metric("Known label classes", f"{class_count:,}" if class_count else "—")
+
+          c3.metric("BOT threshold", f"{BOT_THRESHOLD_DISPLAY:.2f}")
+
+          st.markdown("### Analysis workspaces")
+
+          cols = st.columns(3)
+
+          cards = [
+
+                    ("📂", "Upload Traffic", "Classify a compatible traffic CSV."),
+
+                    ("📊", "Full Model Evaluation", "Measure performance against known labels."),
+
+                    ("🤖", "BOT Error Analysis", "Investigate BOT flows predicted as BENIGN."),
+
+          ]
+
+          for col, (icon, title, desc) in zip(cols, cards):
+
+                    with col:
+
+                              st.markdown(f'<div class="feature-card"><div class="card-icon">{icon}</div><h3>{title}</h3><p>{desc}</p></div>', unsafe_allow_html=True)
+
+                              st.button(
+
+                                  f"Open {title}",
+
+                                  key=f"dash_{title}",
+
+                                  use_container_width=True,
+
+                                  on_click=navigate_to,
+
+                                  args=(title,),
+
+                              )
+
+
+
+
+
+def render_upload_traffic():
+
+          page_header("TRAFFIC INSPECTION", "Upload network traffic", "Upload a CSV containing the model's required network-flow features. Each row represents one flow.")
+
+          uploaded_file = st.file_uploader("Choose a network traffic CSV", type=["csv"], key="traffic_upload")
+
+          if uploaded_file is None:
+
+                    st.info("Upload a compatible CSV to preview its schema and run detection.")
+
+                    st.caption(f"The model expects {len(FEATURES)} features in the same schema used during training.")
+
+                    return
+
+
+
+          signature = (uploaded_file.name, uploaded_file.size)
+
+          if st.session_state.get("upload_signature") != signature:
+
+                    st.session_state.pop("upload_results", None)
+
+                    st.session_state["upload_signature"] = signature
+
+
+
+          try:
+
+                    traffic_df = pd.read_csv(uploaded_file)
+
+          except Exception as exc:
+
+                    st.error(f"Unable to read the uploaded CSV: {exc}")
+
+                    return
+
+          if traffic_df.empty:
+
+                    st.error("The uploaded CSV contains no rows.")
+
+                    return
+
+
+
+          st.write(f"Uploaded rows: **{len(traffic_df):,}**")
+
+          with st.expander("CSV preview", expanded=True):
+
+                    st.dataframe(traffic_df.head(10), use_container_width=True)
+
+
+
+          missing = [f for f in FEATURES if f not in traffic_df.columns]
+
+          if missing:
+
+                    st.error(f"The CSV is missing {len(missing)} required features.")
+
+                    st.code("\n".join(missing), language="text")
+
+                    st.warning("Use the same feature schema as the dataset used to train the model. The app cannot safely reconstruct missing flow features.")
+
+                    return
+
+
+
+          st.success(f"Schema check passed: {len(FEATURES)} required features found.")
+
+          raw_features = traffic_df.loc[:, FEATURES].copy()
+
+          numeric_features = raw_features.apply(pd.to_numeric, errors="coerce")
+
+          numeric_features = numeric_features.replace([np.inf, -np.inf], np.nan)
+
+          invalid_counts = numeric_features.isna().sum()
+
+          invalid_counts = invalid_counts[invalid_counts > 0].sort_values(ascending=False)
+
+          if not invalid_counts.empty:
+
+                    with st.expander("Data quality details"):
+
+                              st.warning("Invalid, missing, or infinite values will be converted to zero, matching the current detector preprocessing.")
+
+                              st.dataframe(invalid_counts.rename("Invalid values").to_frame(), use_container_width=True)
+
+
+
+          if st.button("🔍 Analyze uploaded traffic", type="primary", use_container_width=False):
+
+                    try:
+
+                              with st.spinner("Analyzing network flows..."):
+
+                                        results = detect_network_traffic_batch_tuned(traffic_df)
+
+                              if "BOT_Probability" not in results.columns:
+
+                                        bot_col = next((c for c in results.columns if c.lower() in {"probability_bot", "bot_probability"}), None)
+
+                                        if bot_col:
+
+                                                  results["BOT_Probability"] = results[bot_col]
+
+                                        else:
+
+                                                  results["BOT_Probability"] = 0.0
+
+                              st.session_state["upload_results"] = results
+
+                              st.success("Traffic analysis completed.")
+
+                    except Exception as exc:
+
+                              st.error(f"Unable to analyze this CSV: {exc}")
+
+
+
+          results = st.session_state.get("upload_results")
+
+          if results is None or len(results) != len(traffic_df):
+
+                    return
+
+
+
+          total = len(results)
+
+          suspicious = int(results["Status"].eq("SUSPICIOUS").sum())
+
+          normal = total - suspicious
+
+          st.markdown("### Detection summary")
+
+          c1, c2, c3, c4 = st.columns(4)
+
+          c1.metric("Total flows", f"{total:,}")
+
+          c2.metric("Normal flows", f"{normal:,}")
+
+          c3.metric("Suspicious flows", f"{suspicious:,}")
+
+          c4.metric("BOT threshold", f"{BOT_THRESHOLD_DISPLAY:.2f}")
+
+          st.markdown("### Predicted traffic distribution")
+
+          st.bar_chart(results["Prediction"].value_counts().rename_axis("Attack type").to_frame("Flow count"))
+
+          st.markdown("### Prediction results")
+
+          st.dataframe(results, use_container_width=True)
+
+          st.download_button(
+
+                    "⬇️ Download prediction results",
+
+                    data=results.to_csv(index=False).encode("utf-8"),
+
+                    file_name="ids_traffic_predictions.csv",
+
+                    mime="text/csv",
+
+          )
+
+
+
+          suspicious_indices = results.index[results["Status"].eq("SUSPICIOUS")].tolist()
+
+          if not suspicious_indices:
+
+                    st.success("No suspicious flows were identified.")
+
+                    return
+
+
+
+          st.markdown("### Inspect a suspicious flow")
+
+          selected_index = st.selectbox(
+
+                    "Select a suspicious flow",
+
+                    suspicious_indices,
+
+                    format_func=lambda i: f"Flow {i + 1} — {results.loc[i, 'Prediction']} ({results.loc[i, 'Confidence']:.2%})",
+
+                    key="selected_suspicious_flow",
+
+          )
+
+          selected = results.loc[selected_index]
+
+          c1, c2, c3 = st.columns(3)
+
+          c1.metric("Predicted class", str(selected["Prediction"]))
+
+          c2.metric("Confidence", f"{float(selected['Confidence']):.2%}")
+
+          c3.metric("BOT probability", f"{float(selected.get('BOT_Probability', 0.0)):.2%}")
+
+          with st.expander("Selected flow features"):
+
+                    st.dataframe(traffic_df.iloc[[selected_index]].drop(columns=list(LABEL_COLUMNS), errors="ignore").T.rename(columns={selected_index: "Feature value"}), use_container_width=True)
+
+
+
+          st.markdown("### SHAP explanation")
+
+          st.caption("SHAP explains the underlying model output. The cost-aware threshold may override the model's raw argmax prediction when BOT probability reaches the configured threshold.")
+
+          if st.button("Generate SHAP explanation", key="generate_upload_shap"):
+
+                    try:
+
+                              clean = clean_feature_frame(traffic_df.iloc[[selected_index]])
+
+                              scaled = scaler.transform(clean)
+
+                              probs = model.predict_proba(scaled)[0]
+
+                              classes = list(model.classes_)
+
+                              raw_idx = int(np.argmax(probs))
+
+                              raw_class = classes[raw_idx]
+
+                              st.write(f"**Raw model prediction:** {raw_class}")
+
+                              st.write(f"**Raw model confidence:** {probs[raw_idx]:.2%}")
+
+                              st.write(f"**Threshold-tuned prediction:** {results.loc[selected_index, 'Prediction']}")
+
+                              st.write(f"**Probability for raw predicted class:** {probs[raw_idx]:.2%}")
+
+                              shap_output = explainer.shap_values(scaled)
+
+                              shap_matrix = explain_class_shap(shap_output, raw_idx, len(classes), len(FEATURES))
+
+                              if shap_matrix.shape[0] != 1:
+
+                                        raise ValueError(f"Expected one SHAP sample, got shape {shap_matrix.shape}.")
+
+                              values = shap_matrix[0]
+
+                              shap_df = pd.DataFrame({"Feature": FEATURES, "SHAP Value": values, "Absolute SHAP": np.abs(values)}).sort_values("Absolute SHAP", ascending=False)
+
+                              st.markdown("#### Most influential features")
+
+                              st.dataframe(shap_df.head(15).style.format({"SHAP Value": "{:.6f}", "Absolute SHAP": "{:.6f}"}), use_container_width=True)
+
+                              chart_df = shap_df.head(15).sort_values("SHAP Value")
+
+                              st.bar_chart(chart_df.set_index("Feature")["SHAP Value"])
+
+                              st.info("Positive SHAP values push the explained model output upward and negative values push it downward, relative to the explainer's output convention. The chart explains the raw model's predicted class, not the separate threshold override.")
+
+                    except Exception as exc:
+
+                              st.error(f"Unable to generate the SHAP explanation: {exc}")
+
+
+
+
+
+def render_evaluation():
+
+          page_header("MODEL VALIDATION", "Full model evaluation", "Evaluate the model against the labelled bundled dataset.")
+
+          st.info("This evaluation uses the model's original predictions. It does not apply the separate cost-aware BOT threshold.")
+
+          if st.button("📈 Run full model evaluation", type="primary"):
+
+                    data = get_test_data()
+
+                    if data is not None:
+
+                              try:
+
+                                        with st.spinner("Evaluating model..."):
+
+                                                  st.session_state["evaluation"] = evaluate_model(data)
+
+                                        st.success("Model evaluation completed.")
+
+                              except Exception as exc:
+
+                                        st.error(f"Model evaluation failed: {exc}")
+
+
+
+          evaluation = st.session_state.get("evaluation")
+
+          if evaluation is None:
+
+                    return
+
+          try:
+
+                    st.markdown("### Overall performance")
+
+                    cols = st.columns(4)
+
+                    for col, key, label in zip(cols, ["accuracy", "precision", "recall", "f1_score"], ["Accuracy", "Precision", "Recall", "F1-score"]):
+
+                              col.metric(label, f"{float(evaluation[key]) * 100:.2f}%")
+
+                    report = evaluation["classification_report"].copy()
+
+                    class_rows = [x for x in report.index if x not in {"accuracy", "macro avg", "weighted avg"}]
+
+                    st.markdown("### Class-wise performance")
+
+                    st.dataframe(report.loc[class_rows].style.format({"precision": "{:.4f}", "recall": "{:.4f}", "f1-score": "{:.4f}", "support": "{:.0f}"}), use_container_width=True)
+
+                    summary = [x for x in ["macro avg", "weighted avg"] if x in report.index]
+
+                    if summary:
+
+                              st.markdown("### Summary averages")
+
+                              st.dataframe(report.loc[summary].style.format({"precision": "{:.4f}", "recall": "{:.4f}", "f1-score": "{:.4f}", "support": "{:.0f}"}), use_container_width=True)
+
+                    cm = evaluation["confusion_matrix"]
+
+                    st.markdown("### Confusion matrix")
+
+                    st.dataframe(cm, use_container_width=True)
+
+                    fig, ax = plt.subplots(figsize=(12, 8))
+
+                    image = ax.imshow(cm.values, aspect="auto")
+
+                    for i in range(len(cm.index)):
+
+                              for j in range(len(cm.columns)):
+
+                                        ax.text(j, i, f"{cm.iloc[i, j]:,}", ha="center", va="center", fontsize=8)
+
+                    ax.set_xticks(range(len(cm.columns)))
+
+                    ax.set_xticklabels(cm.columns, rotation=45, ha="right")
+
+                    ax.set_yticks(range(len(cm.index)))
+
+                    ax.set_yticklabels(cm.index)
+
+                    ax.set_xlabel("Predicted class")
+
+                    ax.set_ylabel("Actual class")
+
+                    ax.set_title("IDS confusion matrix")
+
+                    fig.colorbar(image, ax=ax, label="Number of samples")
+
+                    fig.tight_layout()
+
+                    st.pyplot(fig, use_container_width=True)
+
+                    plt.close(fig)
+
+                    st.markdown("### Class performance visualization")
+
+                    if class_rows:
+
+                              st.bar_chart(report.loc[class_rows, ["precision", "recall", "f1-score"]])
+
+          except Exception as exc:
+
+                    st.error(f"Evaluation results could not be displayed: {exc}")
+
+
+
+
+
+def render_bot_error_analysis():
+
+          page_header("ERROR ANALYSIS", "BOT attack error analysis", "Inspect actual BOT flows that the underlying model classifies as BENIGN.")
+
+          st.caption("This analysis uses raw argmax predictions, independently of the cost-aware BOT threshold.")
+
+          if st.button("🔬 Analyze BOT → BENIGN errors", type="primary"):
+
+                    data = get_test_data()
+
+                    if data is not None:
+
+                              try:
+
+                                        mask = data["Attack_Type"].astype(str).eq("BOT")
+
+                                        if not mask.any():
+
+                                                  st.warning("No BOT traffic was found in the bundled dataset.")
+
+                                                  st.session_state["bot_analysis_data"] = None
+
+                                        else:
+
+                                                  X = clean_feature_frame(data.loc[mask, FEATURES])
+
+                                                  scaled = scaler.transform(X)
+
+                                                  probabilities = model.predict_proba(scaled)
+
+                                                  classes = list(model.classes_)
+
+                                                  if "BOT" not in classes or "BENIGN" not in classes:
+
+                                                            raise ValueError("The trained model must contain BOT and BENIGN classes.")
+
+                                                  predictions = np.asarray(classes)[np.argmax(probabilities, axis=1)]
+
+                                                  analysis = X.copy()
+
+                                                  analysis["Actual"] = "BOT"
+
+                                                  analysis["Predicted"] = predictions
+
+                                                  analysis["Prediction Confidence"] = probabilities.max(axis=1)
+
+                                                  analysis["BENIGN Probability"] = probabilities[:, classes.index("BENIGN")]
+
+                                                  st.session_state["bot_analysis_data"] = analysis
+
+                                                  st.session_state["bot_shap_direction"] = None
+
+                                                  st.success("BOT error analysis completed.")
+
+                              except Exception as exc:
+
+                                        st.error(f"BOT error analysis failed: {exc}")
+
+
+
+          analysis = st.session_state.get("bot_analysis_data")
+
+          if analysis is None:
+
+                    st.info("Run the analysis to calculate BOT classification errors.")
+
+                    return
+
+          correct = analysis[analysis["Predicted"] == "BOT"].copy()
+
+          errors = analysis[analysis["Predicted"] == "BENIGN"].copy()
+
+          total = len(analysis)
+
+          recall = len(correct) / total if total else 0.0
+
+          st.markdown("### BOT error summary")
+
+          cols = st.columns(4)
+
+          cols[0].metric("Actual BOT flows", f"{total:,}")
+
+          cols[1].metric("Correct BOT (argmax)", f"{len(correct):,}")
+
+          cols[2].metric("BOT → BENIGN", f"{len(errors):,}")
+
+          cols[3].metric("Raw BOT recall", f"{recall:.2%}")
+
+          if errors.empty:
+
+                    st.success("No BOT → BENIGN misclassifications were found by raw argmax.")
+
+                    return
+
+
+
+          st.markdown("### Confidence analysis")
+
+          p = errors["BENIGN Probability"]
+
+          cols = st.columns(4)
+
+          cols[0].metric("Average BENIGN probability", f"{p.mean():.2%}")
+
+          cols[1].metric("Minimum BENIGN probability", f"{p.min():.2%}")
+
+          cols[2].metric("Maximum BENIGN probability", f"{p.max():.2%}")
+
+          cols[3].metric("Average prediction confidence", f'{errors["Prediction Confidence"].mean():.2%}')
+
+
+
+          if not correct.empty:
+
+                    st.markdown("### BOT feature comparison")
+
+                    rows = []
+
+                    for feature in FEATURES:
+
+                              a = float(correct[feature].mean())
+
+                              b = float(errors[feature].mean())
+
+                              relative = abs(b - a) / abs(a) * 100 if a != 0 and np.isfinite(a) else np.nan
+
+                              rows.append({"Feature": feature, "Correct BOT Mean": a, "BOT → BENIGN Mean": b, "Relative Difference (%)": relative})
+
+                    comparison = pd.DataFrame(rows).sort_values("Relative Difference (%)", ascending=False, na_position="last")
+
+                    st.dataframe(comparison.head(20).style.format({"Correct BOT Mean": "{:.4f}", "BOT → BENIGN Mean": "{:.4f}", "Relative Difference (%)": "{:.2f}"}), use_container_width=True)
+
+
+
+          st.markdown("### SHAP direction analysis")
+
+          sample = errors.head(min(20, len(errors)))[FEATURES].copy()
+
+          try:
+
+                    scaled_sample = scaler.transform(sample)
+
+                    shap_output = explainer.shap_values(scaled_sample)
+
+                    classes = list(model.classes_)
+
+                    benign_idx = classes.index("BENIGN")
+
+                    shap_matrix = explain_class_shap(shap_output, benign_idx, len(classes), len(FEATURES))
+
+                    if shap_matrix.shape != (len(sample), len(FEATURES)):
+
+                              raise ValueError(f"Unexpected SHAP matrix shape {shap_matrix.shape}.")
+
+                    direction = pd.DataFrame({
+
+                              "Feature": FEATURES,
+
+                              "Mean SHAP": shap_matrix.mean(axis=0),
+
+                              "Mean Absolute SHAP": np.abs(shap_matrix).mean(axis=0),
+
                     })
 
+                    direction["Direction"] = np.where(direction["Mean SHAP"] > 0, "Positive contribution", np.where(direction["Mean SHAP"] < 0, "Negative contribution", "Near zero"))
 
-                    # =================================================
-                    # DETERMINE DIRECTION
-                    # =================================================
-
-                    shap_direction_df[
-                        "Direction"
-                    ] = (
-                        shap_direction_df[
-                            "Mean SHAP"
-                        ]
-                        .apply(
-                            lambda x:
-                            "⬆️ Toward BENIGN"
-                            if x > 0
-                            else "⬇️ Away from BENIGN"
-                        )
-                    )
-
-
-                    # =================================================
-                    # SORT BY IMPORTANCE
-                    # =================================================
-
-                    shap_direction_df = (
-                        shap_direction_df
-                        .sort_values(
-                            "Mean Absolute SHAP",
-                            ascending=False,
-                        )
-                        .reset_index(drop=True)
-                    )
-
-
-                    # =================================================
-                    # SAVE SHAP DATAFRAME
-                    # =================================================
-
-                    st.session_state.shap_direction_df = (
-                        shap_direction_df
-                    )
-
-
-                    # =================================================
-                    # DISPLAY TOP FEATURES
-                    # =================================================
-
-                    st.write(
-                        "The table below shows which features have the "
-                        "strongest influence on the BENIGN prediction."
-                    )
-
-
-                    st.dataframe(
-                        shap_direction_df
-                        .head(15)
-                        .style.format({
-                            "Mean SHAP":
-                                "{:.6f}",
-
-                            "Mean Absolute SHAP":
-                                "{:.6f}",
-                        }),
-                        width="stretch",
-                    )
-
-
-                    # =================================================
-                    # FEATURES PUSHING TOWARD BENIGN
-                    # =================================================
-
-                    st.subheader(
-                        "⬆️ Features Pushing BOT Traffic Toward BENIGN"
-                    )
-
-
-                    toward_benign = (
-                        shap_direction_df[
-                            shap_direction_df[
-                                "Mean SHAP"
-                            ] > 0
-                        ]
-                        .sort_values(
-                            "Mean SHAP",
-                            ascending=False,
-                        )
-                        .head(10)
-                    )
-
-
-                    if len(
-                        toward_benign
-                    ) > 0:
-
-                        st.dataframe(
-                            toward_benign[
-                                [
-                                    "Feature",
-                                    "Mean SHAP",
-                                    "Mean Absolute SHAP",
-                                ]
-                            ]
-                            .style.format({
-                                "Mean SHAP":
-                                    "{:.6f}",
-
-                                "Mean Absolute SHAP":
-                                    "{:.6f}",
-                            }),
-                            width="stretch",
-                        )
-
-                    else:
-
-                        st.info(
-                            "No features were found pushing "
-                            "the prediction toward BENIGN."
-                        )
-
-
-                    # =================================================
-                    # FEATURES PUSHING AWAY FROM BENIGN
-                    # =================================================
-
-                    st.subheader(
-                        "⬇️ Features Pushing BOT Traffic Away From BENIGN"
-                    )
-
-
-                    away_from_benign = (
-                        shap_direction_df[
-                            shap_direction_df[
-                                "Mean SHAP"
-                            ] < 0
-                        ]
-                        .sort_values(
-                            "Mean SHAP",
-                            ascending=True,
-                        )
-                        .head(10)
-                    )
-
-
-                    if len(
-                        away_from_benign
-                    ) > 0:
-
-                        st.dataframe(
-                            away_from_benign[
-                                [
-                                    "Feature",
-                                    "Mean SHAP",
-                                    "Mean Absolute SHAP",
-                                ]
-                            ]
-                            .style.format({
-                                "Mean SHAP":
-                                    "{:.6f}",
-
-                                "Mean Absolute SHAP":
-                                    "{:.6f}",
-                            }),
-                            width="stretch",
-                        )
-
-                    else:
-
-                        st.info(
-                            "No features were found pushing "
-                            "the prediction away from BENIGN."
-                        )
-
-
-                    # =================================================
-                    # SHAP INTERPRETATION
-                    # =================================================
-
-                    st.info(
-                        "Positive SHAP values indicate features "
-                        "contributing toward the BENIGN prediction, "
-                        "while negative values indicate features "
-                        "contributing away from BENIGN. This helps "
-                        "identify why some BOT traffic is difficult "
-                        "for the IDS to detect."
-                    )
-
-    else:
-
-        st.success(
-            "No BOT → BENIGN misclassifications were found."
-        )
+                    direction = direction.sort_values("Mean Absolute SHAP", ascending=False).reset_index(drop=True)
 
+                    st.session_state["bot_shap_direction"] = direction
 
-    # ========================================================
-    # AUTOMATED BOT ERROR FINDINGS
-    # ========================================================
+                    st.dataframe(direction.head(15).style.format({"Mean SHAP": "{:.6f}", "Mean Absolute SHAP": "{:.6f}"}), use_container_width=True)
 
-    st.subheader(
-        "🔎 Automated BOT Error Findings"
-    )
+                    st.bar_chart(direction.head(15).set_index("Feature")["Mean SHAP"])
 
-
-    if len(bot_errors) > 0:
+                    st.caption("SHAP values explain the BENIGN class output for these misclassified BOT flows. Confirm the explainer's output convention before interpreting the sign as evidence for BENIGN.")
 
-        # ====================================================
-        # BASIC STATISTICS
-        # ====================================================
+          except Exception as exc:
 
-        total_bot = len(
-            bot_analysis
-        )
+                    st.error(f"SHAP direction analysis failed: {exc}")
 
-        missed_bot = len(
-            bot_errors
-        )
 
-        correct_bot_count = len(
-            bot_correct
-        )
 
-        bot_recall = (
-            correct_bot_count / total_bot
-            if total_bot > 0
-            else 0
-        )
+          st.markdown("### Sample BOT → BENIGN flows")
 
-        missed_percentage = (
-            missed_bot / total_bot * 100
-            if total_bot > 0
-            else 0
-        )
+          st.dataframe(errors[["Actual", "Predicted", "Prediction Confidence", "BENIGN Probability"]].head(20).style.format({"Prediction Confidence": "{:.2%}", "BENIGN Probability": "{:.2%}"}), use_container_width=True)
 
+          st.download_button("Download BOT error rows", data=errors.to_csv(index=False).encode("utf-8"), file_name="bot_error_analysis.csv", mime="text/csv")
 
-        # ====================================================
-        # CONFIDENCE STATISTICS
-        # ====================================================
 
-        avg_benign_probability = (
-            bot_errors[
-                "BENIGN Probability"
-            ].mean()
-        )
 
-        max_benign_probability = (
-            bot_errors[
-                "BENIGN Probability"
-            ].max()
-        )
 
-        min_benign_probability = (
-            bot_errors[
-                "BENIGN Probability"
-            ].min()
-        )
 
+# ============================================================
 
-        # ====================================================
-        # SUMMARY
-        # ====================================================
-
-        col1, col2, col3, col4 = st.columns(4)
-
-        with col1:
+# Main router
 
-            st.metric(
-                "Total BOT Flows",
-                f"{total_bot:,}",
-            )
-
-        with col2:
-
-            st.metric(
-                "Correct BOT",
-                f"{correct_bot_count:,}",
-            )
-
-        with col3:
-
-            st.metric(
-                "BOT → BENIGN",
-                f"{missed_bot:,}",
-            )
-
-        with col4:
-
-            st.metric(
-                "BOT Recall",
-                f"{bot_recall * 100:.2f}%",
-            )
-
-
-        # ====================================================
-        # FINDING 1
-        # ====================================================
-
-        st.markdown(
-            f"""
-### Finding 1 — BOT Detection Gap
-
-The IDS correctly detects **{correct_bot_count:,}**
-out of **{total_bot:,}** BOT flows.
-
-However, **{missed_bot:,} BOT flows ({missed_percentage:.2f}%)**
-are incorrectly classified as BENIGN.
-
-This results in a BOT recall of
-**{bot_recall * 100:.2f}%**.
-"""
-        )
-
-
-        # ====================================================
-        # FINDING 2
-        # ====================================================
-
-        st.markdown(
-            f"""
-### Finding 2 — High-Confidence BOT Errors
-
-The incorrectly classified BOT flows have an average
-BENIGN probability of
-**{avg_benign_probability * 100:.2f}%**.
-
-The BENIGN probability ranges from
-**{min_benign_probability * 100:.2f}%**
-to
-**{max_benign_probability * 100:.2f}%**.
-
-This indicates that some BOT flows are not merely
-borderline predictions; the model can classify certain
-BOT flows as BENIGN with high confidence.
-"""
-        )
-
-
-        # ====================================================
-        # FINDING 3 + FINDING 4 — SHAP DIRECTION
-        # ====================================================
+# ============================================================
 
-        shap_direction_df = (
-            st.session_state.shap_direction_df
-        )
+page = render_sidebar()
 
 
-        if (
-            shap_direction_df is not None
-            and len(shap_direction_df) > 0
-        ):
 
-            toward_benign = (
-                shap_direction_df[
-                    shap_direction_df[
-                        "Mean SHAP"
-                    ] > 0
-                ]
-                .sort_values(
-                    "Mean SHAP",
-                    ascending=False,
-                )
-            )
+if page == "Home":
 
+          render_home()
 
-            away_from_benign = (
-                shap_direction_df[
-                    shap_direction_df[
-                        "Mean SHAP"
-                    ] < 0
-                ]
-                .sort_values(
-                    "Mean SHAP",
-                    ascending=True,
-                )
-            )
+elif page == "How It Works":
 
+          render_how_it_works()
 
-            # =================================================
-            # FINDING 3
-            # =================================================
+elif page == "Dashboard":
 
-            if len(
-                toward_benign
-            ) > 0:
+          render_dashboard()
 
-                top_benign_features = (
-                    toward_benign
-                    .head(5)[
-                        "Feature"
-                    ]
-                    .tolist()
-                )
+elif page == "Upload Traffic":
 
+          render_upload_traffic()
 
-                feature_text = ", ".join(
-                    f"`{feature}`"
-                    for feature in top_benign_features
-                )
+elif page == "Full Model Evaluation":
 
+          render_evaluation()
 
-                st.markdown(
-                    f"""
-### Finding 3 — Features Supporting BENIGN Classification
+elif page == "BOT Error Analysis":
 
-The SHAP analysis identifies the following features
-as the strongest contributors toward the BENIGN
-prediction among the analyzed BOT errors:
-
-**{feature_text}**
-
-These features should therefore be investigated when
-explaining why some BOT traffic resembles normal
-network activity.
-"""
-                )
-
-
-            # =================================================
-            # FINDING 4
-            # =================================================
-
-            if len(
-                away_from_benign
-            ) > 0:
-
-                top_attack_features = (
-                    away_from_benign
-                    .head(5)[
-                        "Feature"
-                    ]
-                    .tolist()
-                )
-
-
-                feature_text = ", ".join(
-                    f"`{feature}`"
-                    for feature in top_attack_features
-                )
-
-
-                st.markdown(
-                    f"""
-### Finding 4 — Features Supporting BOT Detection
-
-Some features still contribute away from the BENIGN
-prediction:
-
-**{feature_text}**
-
-This shows that the model receives both normal-like
-and attack-like signals when processing these BOT
-flows.
-"""
-                )
-
-
-        # ====================================================
-        # FINAL RESEARCH INTERPRETATION
-        # ====================================================
-
-        st.subheader(
-            "📌 Research Interpretation"
-        )
-
-
-        st.info(
-            "The BOT error analysis demonstrates that the IDS "
-            "performs well overall but has a specific weakness "
-            "in detecting a subset of BOT traffic. SHAP analysis "
-            "provides evidence that network-flow characteristics "
-            "influence these misclassifications. Therefore, BOT "
-            "traffic should be investigated separately during "
-            "the model-improvement stage."
-        )
-
-
-    else:
-
-        st.success(
-            "No BOT → BENIGN misclassifications were detected."
-        )
-
-
-    # ========================================================
-    # SAMPLE MISCLASSIFIED FLOWS
-    # ========================================================
-
-    st.subheader(
-        "🔍 Sample BOT → BENIGN Flows"
-    )
-
-
-    if len(bot_errors) > 0:
-
-        display_columns = [
-            "Actual",
-            "Predicted",
-            "Prediction Confidence",
-            "BENIGN Probability",
-        ]
-
-
-        st.dataframe(
-            bot_errors[
-                display_columns
-            ]
-            .head(20)
-            .style.format({
-                "Prediction Confidence":
-                    "{:.2%}",
-
-                "BENIGN Probability":
-                    "{:.2%}",
-            }),
-            width="stretch",
-        )
-
-
-    else:
-
-        st.success(
-            "No BOT → BENIGN misclassifications were found."
-        )
-
-
-else:
-
-    # ========================================================
-    # BOT ANALYSIS NOT RUN YET
-    # ========================================================
-
-    st.info(
-        "Click **🔬 Analyze BOT → BENIGN Errors** to generate "
-        "the BOT error analysis."
-    )
+          render_bot_error_analysis()

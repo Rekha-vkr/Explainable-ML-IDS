@@ -1,258 +1,269 @@
-# Explainable Machine Learning-Based Intrusion Detection System for Network Security
+# Explainable Machine Learning-Based Network Intrusion Detection System (CICIDS2017)
 
-## Project Overview
+[![Python](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-1.65.0-red.svg)](https://streamlit.io/)
+[![Scikit-learn](https://img.shields.io/badge/Scikit--learn-1.9.1-orange.svg)](https://scikit-learn.org/)
+[![SHAP](https://img.shields.io/badge/Explainability-TreeSHAP-brightgreen.svg)](https://shap.readthedocs.io/)
+[![NFStream](https://img.shields.io/badge/Live_Capture-NFStream-purple.svg)](https://www.nfstream.org/)
+[![pytest](https://img.shields.io/badge/Tests-pytest-success.svg)](https://docs.pytest.org/)
 
-This project develops an **Explainable Machine Learning-Based Intrusion Detection System (IDS)** for detecting and analyzing malicious network activity.
+An explainable network intrusion detection system (NIDS) built around the CICIDS2017 benchmark dataset. The project combines a Random Forest classifier, cost-aware BOT probability thresholding, SHAP explanations, CSV-based traffic analysis, and an NFStream-based live/PCAP monitoring prototype.
 
-The system uses a **Random Forest machine learning classifier** to analyze network-flow data and classify network activity into **BENIGN** or supported attack categories. To improve transparency and interpretability, **SHAP (SHapley Additive exPlanations)** is integrated to identify the network traffic features that influence individual predictions.
+> **Note:** Performance values below are reported project results from the supplied project documentation. Re-run the evaluation scripts in your environment to independently reproduce them. Live-capture performance may differ from offline CSV evaluation because of feature-parity limitations.
 
-The project combines:
+## Table of contents
 
-- Network Security
-- Machine Learning
-- Intrusion Detection
-- Explainable AI (XAI)
-- Network Traffic Analysis
-- Cybersecurity Analytics
+- [Overview](#overview)
+- [Highlights](#highlights)
+- [Evaluation methodology](#evaluation-methodology)
+- [Reported test-set performance](#reported-test-set-performance)
+- [BOT threshold tuning](#bot-threshold-tuning)
+- [Explainable AI with SHAP](#explainable-ai-with-shap)
+- [Latency and throughput](#latency-and-throughput)
+- [Live monitoring and PCAP replay](#live-monitoring-and-pcap-replay)
+- [Project structure](#project-structure)
+- [Installation and quickstart](#installation-and-quickstart)
+- [Running tests and benchmarks](#running-tests-and-benchmarks)
+- [Limitations](#limitations)
+- [Roadmap](#roadmap)
 
----
+## Overview
 
-## Objectives
+Aggregate accuracy can hide poor performance on rare but important attack classes. For intrusion detection, a false alarm costs analyst time, while a missed intrusion can leave malicious activity undetected. This project therefore reports class-level metrics and explores a lower BOT probability threshold to prioritize BOT recall.
 
-1. Detect suspicious network traffic using machine learning.
-2. Classify network activities into BENIGN and attack categories.
-3. Apply preprocessing and feature selection to network-flow data.
-4. Use a Random Forest classifier for intrusion detection.
-5. Evaluate the IDS using accuracy, precision, recall, and F1-score.
-6. Explain individual predictions using SHAP.
-7. Analyze incorrectly classified attack traffic.
-8. Investigate high-confidence misclassifications.
-9. Identify important network traffic features associated with attack detection.
-10. Provide understandable detection results through an IDS dashboard.
+### Highlights
 
----
+- **Random Forest multiclass classification** using CICFlowMeter-style traffic features.
+- **Leakage-conscious evaluation:** the documented workflow splits the data before fitting preprocessing transformations.
+- **Cost-aware BOT threshold:** a dedicated decision threshold can be used for BOT while other classes retain the default decision behavior.
+- **SHAP explanations:** feature attributions help inspect individual predictions and misclassifications.
+- **Streamlit interface:** dashboard views for traffic analysis, model evaluation, and BOT error analysis.
+- **NFStream prototype:** offline PCAP replay and live interface capture, subject to the feature-parity limitation described below.
 
-## Dataset
+## Evaluation methodology
 
-The project uses network traffic data derived from the **CICIDS2017 dataset**.
+The documented workflow includes:
 
-The processed dataset contains network-flow features representing normal and malicious network activity.
+1. Creating an 80/20 train/test split before fitting scaling transformations (`src/split_dataset.py`).
+2. Fitting `StandardScaler` on training data and saving it as `models/standard_scaler.pkl`.
+3. Applying numeric sanitization for infinite and missing values that can arise from flow-rate calculations.
+4. Evaluating on a held-out test set reported as 504,160 flows.
 
-The target column used for classification is:
+Avoid fitting preprocessing steps on the test set. When reproducing the results, verify the split files, model artifacts, label mapping, and feature order match the evaluation code.
+
+## Reported test-set performance
+
+The supplied project documentation reports the following classification metrics on 504,160 held-out flows:
+
+| Attack class | Support | Precision | Recall at default threshold | F1-score |
+|---|---:|---:|---:|---:|
+| BENIGN | 419,012 | 99.93% | 99.94% | 99.93% |
+| DOS | 38,749 | 99.89% | 99.66% | 99.77% |
+| DDOS | 25,603 | 99.99% | 99.97% | 99.98% |
+| PORTSCAN | 18,139 | 98.92% | 99.90% | 99.41% |
+| BRUTE_FORCE | 1,830 | 99.95% | 99.51% | 99.73% |
+| WEB_ATTACK | 429 | 98.35% | 96.97% | 97.65% |
+| BOT | 389 | 90.00% | 69.41% | 78.37% |
+| INFILTRATION | 7 | 75.00% | 42.86% | 54.55% |
+| HEARTBLEED | 2 | 100.00%* | 100.00%* | 100.00%* |
+| **Overall accuracy** | **504,160** | — | — | **99.89%** |
+| **Macro average** | — | **95.78%** | **89.80%** | **92.16%** |
+| **Weighted average** | — | **99.89%** | **99.89%** | **99.89%** |
+
+`*` HEARTBLEED has only two reported test examples; these figures are not evidence of reliable generalization.
+
+## BOT threshold tuning
+
+At the default 0.50 decision threshold, the documentation reports BOT recall of 69.41%, with 119 missed BOT flows out of 389. Lowering the BOT threshold increases recall while increasing false alarms.
+
+| BOT threshold | Precision | Recall | F1-score | Missed BOT flows |
+|---:|---:|---:|---:|---:|
+| 0.50 | 90.00% | 69.41% | 78.37% | 119 |
+| 0.40 | 90.79% | 76.61% | 83.10% | 91 |
+| 0.37 | 91.43% | 82.26% | 86.60% | 69 |
+| 0.30 | 88.27% | 86.89% | 87.57% | 51 |
+| 0.20 | 83.67% | 92.03% | 87.65% | 31 |
+| 0.15 | 76.65% | 95.37% | 85.03% | 18 |
+| 0.10 | 62.46% | 97.17% | 76.06% | 11 |
+
+The project documentation identifies **0.15** as its cost-aware operating point, prioritizing fewer missed BOT flows. The documented implementation is `src/threshold_detector.py`; threshold optimization is described in `src/tune_bot_threshold.py`. Confirm the actual threshold used by your current app and saved artifacts before relying on these figures operationally.
+
+## Explainable AI with SHAP
+
+The project uses SHAP/TreeSHAP-style feature attribution to help explain individual predictions and investigate false negatives. The supplied analysis highlights features such as:
+
+- Flow duration and inter-arrival-time statistics.
+- TCP window features, including `Init_Win_bytes_forward` and `Init_Win_bytes_backward`.
+- Packet-length statistics and TCP flag counts.
+- Destination port and other flow characteristics.
+
+Feature contributions are model-specific and should be interpreted as explanations of model behavior, not proof that a feature causes an attack. Ensure the SHAP output class aligns with the prediction being explained.
+
+## Latency and throughput
+
+The supplied documentation reports the following benchmark results:
+
+| Pipeline stage | Mean latency |
+|---|---:|
+| Feature scaling | 2.48 ms |
+| Random Forest inference (100 trees) | 58.80 ms |
+| BOT threshold logic | 0.019 ms |
+| **End-to-end single flow** | **61.30 ms** |
+
+Reported batch results:
+
+| Batch size | Total time | Reported throughput |
+|---:|---:|---:|
+| 1 | 59.74 ms | 16.7 flows/sec |
+| 10 | 65.57 ms | 152.5 flows/sec |
+| 100 | 66.77 ms | 1,497.6 flows/sec |
+| 500 | 75.76 ms | 6,600 flows/sec |
+| 1,000 | 76.63 ms | 13,050 flows/sec |
+
+These are reported measurements, not guaranteed performance on other hardware. Re-run `src/benchmark_latency.py` to measure your environment.
+
+## Live monitoring and PCAP replay
+
+The project documentation describes an NFStream-based monitoring prototype in `src/live_monitor.py`.
+
+PCAP replay example:
+
+```bash
+python src/live_monitor.py --pcap data/multiclass_traffic.pcap
+```
+
+Live interface capture example:
+
+```bash
+python src/live_monitor.py --interface "Wi-Fi" --threshold 0.15
+```
+
+Interface names and permissions vary by operating system. On Windows, Npcap may be required; on Linux, libpcap development libraries may be required. Only capture traffic on networks and devices you own or are authorized to monitor.
+
+## Project structure
+
+The supplied repository documentation describes a layout similar to:
 
 ```text
-Attack_Type
+explainable-ml-ids/
+├── data/
+│   ├── processed_cicids2017.csv
+│   ├── sample_flows.csv
+│   ├── train.csv
+│   ├── test.csv
+│   └── *.pcap
+├── models/
+│   ├── random_forest_ids.pkl
+│   ├── standard_scaler.pkl
+│   ├── feature_names.pkl
+│   ├── class_names.pkl
+│   └── bot_threshold.pkl
+├── results/
+│   ├── graphs/
+│   ├── reports/
+│   └── live_alerts.csv
+├── src/
+│   ├── detector.py
+│   ├── threshold_detector.py
+│   ├── live_monitor.py
+│   ├── benchmark_latency.py
+│   ├── tune_bot_threshold.py
+│   ├── split_dataset.py
+│   └── train_model.py
+├── tests/
+├── app.py
+├── LIVE_MONITOR_GUIDE.md
+├── requirements.txt
+└── README.md
+```
 
-The model uses 70 selected network traffic features, including flow statistics, packet characteristics, TCP-related features, ports, and packet-rate information. IDS-1.docx
+Your checked-out repository may differ. Keep this tree aligned with the files actually committed to GitHub.
 
-### Machine Learning Approach
-The IDS uses the following machine learning pipeline:
-   Network Traffic Dataset
-         ↓
-   Data Preprocessing
-         ↓
-   Feature Selection
-         ↓
-   StandardScaler
-         ↓
-   Random Forest Classifier
-         ↓
-   Attack Classification
-         ↓
-   Prediction Confidence
-         ↓
-   SHAP Explanation
+## Installation and quickstart
 
-Machine Learning Model
-Algorithm: Random Forest Classifier
+### Prerequisites
 
-The trained model and supporting artifacts are stored using Joblib:
-   models/
-   ├── random_forest_ids.pkl
-   ├── standard_scaler.pkl
-   ├── feature_names.pkl
-   └── class_names.pkl
-The project maintains the same feature names and ordering 
-during prediction to ensure compatibility with the trained model. IDS-1.docx
+- Python version compatible with the pinned packages in `requirements.txt`.
+- Git, if cloning the repository.
+- Optional packet-capture dependencies for live monitoring: Npcap on Windows or libpcap on Linux.
 
-#### Explainable AI
-The project uses SHAP (SHapley Additive exPlanations) to explain individual IDS predictions.
-For each analyzed network flow, SHAP identifies features that contribute
- to the model's prediction and ranks them according to their contribution.
+### 1. Clone the repository
 
-This allows the system to answer:
-**   Why was this network activity classified as BENIGN or as an attack?**
+Replace the placeholder with your repository URL:
 
-SHAP is also used to investigate misclassified BOT traffic and identify features contributing toward the incorrect BENIGN prediction or supporting BOT detection.
+```bash
+git clone https://github.com/<YOUR-USERNAME>/<YOUR-REPOSITORY>.git
+cd <YOUR-REPOSITORY>
+```
 
-#### **IDS Detection System**
-The Streamlit-based application provides an interactive interface for analyzing network activity.
-For each analyzed network activity, the system provides:
-- Predicted attack class
-- Prediction confidence
-- NORMAL or SUSPICIOUS status
-- Detection alert
-- SHAP-based feature explanation
-The detection workflow includes feature validation, feature ordering, scaling, Random Forest prediction, confidence calculation, classification, and alert generation.
+### 2. Create and activate a virtual environment
 
-#### Model Performance
-The IDS achieved the following overall results on the evaluated network traffic data:
-Metric      Result
-Accuracy    99.94%
-Precision   99.94%
-Recall      99.94%
-F1-Score    99.94%
+Windows PowerShell:
 
-These results demonstrate strong overall classification performance.
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
 
-**#### BOT Attack Error Analysis**
-To investigate class-specific weaknesses, BOT traffic was analyzed separately.
-BOT Detection Result       Value
-Total BOT Flows            1,956
-Correctly Detected         1,794
-Misclassified as BENIGN    162
-BOT Recall                 91.72%
+Linux/macOS:
 
-Although the overall model achieved 99.94% performance, the BOT analysis revealed that some attack traffic was incorrectly classified as BENIGN. 
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
 
-**#### Confidence Analysis**
-The incorrectly classified BOT flows were further investigated using prediction probabilities.
-Confidence Measure            Result
-Average BENIGN Probability    64.08%
-Minimum BENIGN Probability    50.23%
-Maximum BENIGN Probability    99.58%
-Average Prediction Confidence 64.08%
+### 3. Install dependencies
 
-The results show that some BOT flows were classified as BENIGN with relatively high confidence. 
+```bash
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
 
-### **SHAP-Based BOT Error Analysis**
-The SHAP analysis identified features influencing the incorrect BENIGN predictions and features supporting BOT detection.
+If installation fails, check that the Python version and package pins in `requirements.txt` are compatible with your platform.
 
-#### Features Supporting BENIGN Classification
-- PSH Flag Count
-- ACK Flag Count
-- Bwd Packet Length Std
-- Packet Length Std
-- Packet Length Mean
+### 4. Verify required files
 
-#### Features Supporting BOT Detection
-- Init_Win_bytes_forward
-- Init_Win_bytes_backward
-- Max Packet Length
-- Destination Port
-- Bwd Packets/s
-This analysis helps explain why certain BOT flows were difficult for the IDS to distinguish from normal network activity.
+Before launching the app, confirm the model artifacts, feature-name mapping, and dataset files expected by your code exist at the configured paths. Do not commit credentials or sensitive captured traffic. Large model and dataset files may need Git LFS or a separate download procedure.
 
-**### Technologies Used**
-- Python
-- Pandas
-- NumPy
-- Scikit-learn
-- Matplotlib
-- SHAP
-- Streamlit
-- Joblib
-- Jupyter Notebook
-- Git & GitHub
+### 5. Run the Streamlit application
 
-**### Project Structure**
-   explainable-ml-ids/
-   │
-   ├── data/
-   │   └── processed_cicids2017.csv
-   │
-   ├── models/
-   │   ├── random_forest_ids.pkl
-   │   ├── standard_scaler.pkl
-   │   ├── feature_names.pkl
-   │   └── class_names.pkl
-   │
-   ├── notebooks/
-   │   └── Analysis and experimentation notebooks
-   │
-   ├── results/
-   │   ├── graphs/
-   │   └── reports/
-   │
-   ├── src/
-   │   └── detector.py
-   │
-   ├── app.py
-   ├── requirements.txt
-   ├── .gitignore
-   └── README.md
-**Note:** Dataset files may be excluded from GitHub through .gitignore. The required dataset must therefore be provided separately when setting up the project on another computer.
+```bash
+streamlit run app.py
+```
 
-### **Installation and Setup**
+Open the local URL printed by Streamlit (usually `http://localhost:8501`).
 
-**1. Clone the Repository**
-   git clone https://github.com/Rekha-vkr/Explainable-ML-IDS.git
-   cd Explainable-ML-IDS
+The interface has been organized around these areas, where implemented in the current `app.py`:
 
-**2. Create a Virtual Environment**
-   python -m venv venv
+- Home and project overview.
+- How It Works.
+- Dashboard.
+- CSV traffic upload and batch detection.
+- Full Model Evaluation.
+- BOT Error Analysis and SHAP inspection.
 
-**3. Activate the Virtual Environment**
-   Windows:
-      venv\Scripts\activate
-   macOS/Linux
-      source venv/bin/activate
+### 6. Run tests and tools
 
-**4. Install Dependencies**
-   pip install -r requirements.txt
+```bash
+pytest tests/
+python src/benchmark_latency.py
+python src/live_monitor.py --pcap data/multiclass_traffic.pcap
+```
 
-**5. Run the IDS Dashboard**
-   streamlit run app.py
-The Streamlit application will open in the browser.
+Run only commands for scripts and files that exist in your local checkout.
 
-**### Research Findings**
-The project demonstrates that overall accuracy alone is not sufficient to understand IDS performance.
-The analysis showed:
-- Strong overall classification performance.
-- Lower detection performance for the BOT attack category.
-- High-confidence BOT-to-BENIGN misclassifications.
-- SHAP can be used to investigate the reasons behind individual predictions.
-- Combining conventional evaluation metrics with class-specific error analysis and explainability provides a more comprehensive - understanding of IDS behavior.
+## Limitations
 
-### **Future Improvements**
-- Possible future improvements include:
-- Improving detection of attack classes with lower recall.
-- Evaluating additional network traffic datasets.
-- Performing feature engineering.
-- Experimenting with other machine learning and ensemble algorithms.
-- Investigating classification thresholds to reduce false negatives.
-- Extending SHAP analysis to additional attack categories.
-- Developing real-time network traffic monitoring.
-- Adding additional security alerts and visualization features.
-- Evaluating the IDS in real-world or live network environments.
+- **Rare classes:** the documented test split includes only seven INFILTRATION flows and two HEARTBLEED flows. Metrics for such small supports are unstable.
+- **Live/offline feature mismatch:** the documentation states that NFStream reconstructs around 40 of the 78 CICFlowMeter features; other features may be zero-filled. This can reduce live-mode detection quality compared with offline CSV evaluation.
+- **Dataset generalization:** CICIDS2017 is a benchmark dataset and may not represent current production network traffic or novel attacks.
+- **Threshold trade-off:** a lower BOT threshold improves recall at the cost of more false positives. Tune thresholds for the deployment's risk tolerance.
+- **Benchmark variability:** latency and throughput depend on hardware, software versions, batch size, and input characteristics.
+- **Security scope:** this is a research/prototype IDS, not a replacement for layered security controls or expert incident response.
 
-**### Project Status**
+## Roadmap
 
-✅ Completed
-- Project environment setup
-- Dataset preprocessing
-- Feature selection
-- Feature scaling
-- Random Forest IDS model
-- Model evaluation
-- IDS prediction system
-- Streamlit dashboard
-- SHAP-based explainability
-- BOT attack error analysis
-- Confidence analysis
-- SHAP error analysis
-- Research findings
-- Project documentation
-
-**### 🔄 Future Work**
-
-- Real-time network monitoring
-- Additional datasets
-- Improved detection of difficult attack classes
-- Additional model experiments
-- Extended explainability analysis
-- Real-world network evaluation
-
-
-**#### Author**
-Rekha
+- Improve parity between live extracted features and the complete CICFlowMeter feature set.
+- Explore integration with Zeek or Suricata event streams.
+- Investigate adaptive thresholds based on network conditions and threat intelligence.
+- Expand testing with more representative, independently collected traffic and rare-class examples.
