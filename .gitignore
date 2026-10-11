@@ -11,3 +11,20 @@ data/*.pcap
 models/
 
 data/
+Python environment and local secrets
+
+.venv/
+.env
+.env.*
+!.env.example
+
+Local caches
+
+.pytest_cache/
+.mypy_cache/
+.coverage
+
+Private or locally captured traffic
+
+*.pcap
+*.pcapng
