@@ -185,8 +185,8 @@ def _prepare_dataframe(data):
         preview = ", ".join(missing[:15])
 
         raise ValueError(
-            f"CSV is missing {len(missing)} required model features: "
-            f"{preview}. "
+            f"Missing {len(missing)} required CICFlowMeter features: "
+            f"{', '.join(missing)}. "
             f"The model expects {len(feature_names)} features. "
             "Upload the same feature schema used to train the model."
         )
